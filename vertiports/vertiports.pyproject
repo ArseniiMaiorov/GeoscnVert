@@ -1,0 +1,8 @@
+{
+    "files": [
+        "device_scanner.py",
+        "led_controller.py",
+        "main.py",
+        "main.qml"
+    ]
+}
