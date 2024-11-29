@@ -68,13 +68,13 @@ Window {
                 onClicked: {
                     var ipAddress = enterIPAdress.text.trim();
 
-                    # Проверяем, есть ли подстановочные символы или поле пустое
+                    // Проверяем, есть ли подстановочные символы или поле пустое
                     if (ipAddress === "" || ipAddress.includes("_")) {
                         showErrorDialog("Поле IP не может быть пустым.");
                     } else if (!ledController.is_valid_ip(ipAddress)) {
                         showErrorDialog("Неверный формат IP-адреса");
                     } else {
-                        ledController.connect(ipAddress, 502); # Устанавливаем соединение
+                        ledController.connect(ipAddress, 502); // Устанавливаем соединение
                     }
                 }
             }
@@ -268,9 +268,9 @@ Window {
                         onClicked: {
                             colorPickerDialog.open();
                             colorPickerDialog.activeColorProperty = "color" + (index + 1);
-                            selectedColor = "white"; # Сброс цвета
-                            point.x = 0; # Сброс позиции круга
-                            point.y = 0; # Сброс позиции круга
+                            selectedColor = "white"; // Сброс цвета
+                            point.x = 0; // Сброс позиции круга
+                            point.y = 0; // Сброс позиции круга
                         }
 
                         height: 25
@@ -314,7 +314,7 @@ Window {
                         }
 
                         onClicked: {
-                            # Получаем текущие значения RGB из палитры
+                            // Получаем текущие значения RGB из палитры
                             var r = Math.round(selectedColor.r * 255);
                             var g = Math.round(selectedColor.g * 255);
                             var b = Math.round(selectedColor.b * 255);
@@ -513,13 +513,13 @@ Window {
         point.y = y - point.height / 2;
     }
 
-    # Функция для отображения диалогового окна с ошибкой
+    // Функция для отображения диалогового окна с ошибкой
     function showErrorDialog(message) {
         errorText.text = message;
         errorDialog.visible = true;
     }
 
-    # Функция для отображения диалогового окна с успешным подключением
+    // Функция для отображения диалогового окна с успешным подключением
     function showSuccessDialog(message, ip) {
         successText.text = message + "\nIP: " + ip;
         successDialog.visible = true;
