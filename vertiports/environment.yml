@@ -1,0 +1,8 @@
+name: led_controller_env
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    - PyQt6
+    - psutil
+    - netifaces

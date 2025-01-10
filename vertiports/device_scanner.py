@@ -1,6 +1,22 @@
 import socket
 import threading
+import logging
+import platform
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from concurrent.futures import ThreadPoolExecutor
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
+    import netifaces
+except ImportError:
+    netifaces = None
+
+# Настройка логирования
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DeviceScanner(QObject):
     deviceFound = pyqtSignal(str)
@@ -10,90 +26,72 @@ class DeviceScanner(QObject):
         super().__init__(parent)
         self.port = port
 
-    def _send_request(self, ip):
-        """Попытка подключения к устройству и отправки запроса."""
+    def sendRequest(self, ip):
+        """Отправляет запрос на указанный IP-адрес и возвращает его, если устройство найдено."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(1)
                 s.connect((ip, self.port))
-                s.sendall(bytes([0x42, 0x42, 0x00, 0xff]))  # Отправка тестового пакета
-                if s.recv(1024):  # Проверка ответа
+                s.sendall(bytes([0x42, 0x42, 0x00, 0xff]))
+                data = s.recv(1024)
+                if data:
+                    logging.info(f"Device found at {ip}:{self.port}")
                     return ip
         except (socket.timeout, socket.error):
+            pass
+        return None
+
+    def _getLocalIp(self):
+        """Определяет локальный IP-адрес на основе ОС."""
+        if psutil:
+            for interface, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family == socket.AF_INET and not addr.address.startswith('127.'):
+                        return addr.address
+        if netifaces:
+            for interface in netifaces.interfaces():
+                addresses = netifaces.ifaddresses(interface)
+                ipv4 = addresses.get(netifaces.AF_INET)
+                if ipv4:
+                    for addr in ipv4:
+                        ip = addr['addr']
+                        if not ip.startswith('127.'):
+                            return ip
+        return socket.gethostbyname(socket.gethostname())
+
+    def _getLocalIpBase(self):
+        """Возвращает базовую часть локального IP-адреса."""
+        localIp = self._getLocalIp()
+        if not localIp:
+            logging.error("Unable to determine local IP address.")
             return None
+        return '.'.join(localIp.split('.')[:-1])
 
-    def _scan_ip(self, ip, found_devices):
-        """Сканирование одного IP-адреса."""
-        device_ip = self._send_request(ip)
-        if device_ip:
-            found_devices.append(device_ip)
+    def scanNetwork(self):
+        """Сканирует сеть в поисках устройств."""
+        foundDevices = []
 
-    def _scan_network_range(self, base_ip, found_devices):
-        """Сканирование диапазона IP-адресов в сети."""
-        threads = []
-        for i in range(1, 255):
-            ip = f"{base_ip}.{i}"
-            thread = threading.Thread(target=self._scan_ip, args=(ip, found_devices))
-            threads.append(thread)
-            thread.start()
+        def scanIp(ip):
+            deviceIp = self.sendRequest(ip)
+            if deviceIp:
+                foundDevices.append(deviceIp)
+                self.deviceFound.emit(deviceIp)
 
-        for thread in threads:
-            thread.join()
-
-    def scan_network(self):
-        """Основная функция для сканирования сети."""
-        found_devices = []
-
-        # Получаем базовый IP-адрес
-        local_ip = self.get_local_ip()
-        if not local_ip:
+        baseIp = self._getLocalIpBase()
+        if not baseIp:
+            logging.error("No valid network base for scanning.")
             self.scanCompleted.emit(False)
             return
 
-        base_ip = '.'.join(local_ip.split('.')[:-1])
-        self._scan_network_range(base_ip, found_devices)
+        logging.info(f"Scanning network base: {baseIp}.x")
+        with ThreadPoolExecutor(max_workers=254) as executor:
+            futures = [executor.submit(scanIp, f"{baseIp}.{i}") for i in range(1, 255)]
+            for future in futures:
+                future.result()
 
-        # Обработка результатов сканирования
-        if found_devices:
-            self.deviceFound.emit(found_devices[0])  # Отправляем первый найденный IP
-        self.scanCompleted.emit(bool(found_devices))
-
-    def get_local_ip(self):
-        """Получение локального IP-адреса устройства."""
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
-        except socket.error:
-            return None
+        self.scanCompleted.emit(bool(foundDevices))
 
     @pyqtSlot()
-    def start_scan(self):
-        """Запуск сканирования сети в отдельном потоке."""
-        threading.Thread(target=self.scan_network, daemon=True).start()
-
-# Пример использования
-if __name__ == "__main__":
-    import sys
-    from PyQt6.QtWidgets import QApplication, QPushButton, QVBoxLayout, QWidget
-
-    app = QApplication(sys.argv)
-
-    window = QWidget()
-    layout = QVBoxLayout()
-
-    scanner = DeviceScanner()
-
-    # Обработка сигналов
-    scanner.deviceFound.connect(lambda ip: print(f"Device found: {ip}"))
-    scanner.scanCompleted.connect(lambda success: print("Scan completed." if success else "No devices found."))
-
-    button = QPushButton("Start Scan")
-    button.clicked.connect(scanner.start_scan)
-
-    layout.addWidget(button)
-    window.setLayout(layout)
-    window.show()
-
-    sys.exit(app.exec())
-
+    def startScan(self):
+        """Запускает сканирование в отдельном потоке."""
+        threading.Thread(target=self.scanNetwork).start()

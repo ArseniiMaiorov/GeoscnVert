@@ -1,5 +1,9 @@
 import socket
 import threading
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class STMLedController:
     """Класс для управления RGB лентами через TCP-контроллер."""
@@ -13,102 +17,115 @@ class STMLedController:
             self.b = b
 
     def __init__(self, ip=None, port=None):
+        # Инициализация подключения и основных параметров
         self.ip = ip
         self.port = port
-        self.connect_timeout = 1
-        self.communicator = self._create_client()
+        self.connectTimeout = 2  # Сократили время для подключения
+        self.communicator = self._createClient(ip=self.ip, port=self.port)
         self.connected = self.communicator is not None
-        self.last_command = None
-        self.last_vertiport_id = None
-
-        self.vertiports_command = [self.VertiportCommand() for _ in range(6)]
-
-        self.reconnect_timer = None
         if self.connected:
-            self._send_identification_request()
-        else:
-            self.start_reconnect_timer()
+            logging.info("Connected to device: %s", hex(self._whoIAm()))
 
-    def _create_client(self):
-        """Создает TCP-клиент и пытается подключиться."""
+        # Инициализация команд для каждого порта
+        self.vertiportsCommand = [self.VertiportCommand() for _ in range(6)]
+        self.lastCommand = None
+        self.lastVertiportId = None
+
+        # Таймер для восстановления соединения
+        self.reconnectTimer = None
+        self.startReconnectTimer()
+
+    def startReconnectTimer(self):
+        """Запуск таймера повторного подключения."""
+        if self.reconnectTimer is None or not self.reconnectTimer.is_alive():  # Исправил имя метода на is_alive
+            self.reconnectTimer = threading.Timer(5, self.reconnect)
+            self.reconnectTimer.start()
+
+    def stopReconnectTimer(self):
+        """Остановка таймера повторного подключения."""
+        if self.reconnectTimer:
+            self.reconnectTimer.cancel()
+
+    def _createClient(self, ip, port):
+        """Создание TCP-клиента для подключения к контроллеру."""
+        logging.info(f"Creating connection to {ip}:{port}")
+        communicator = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            communicator = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            communicator.connect((self.ip, self.port))
+            communicator.connect((ip, port))
             return communicator
-        except (OSError, ConnectionRefusedError):
+        except (OSError, ConnectionRefusedError) as e:
+            logging.error(f"Failed to connect to {ip}:{port}: {e}")
             return None
 
-    def _send_message(self, msg):
-        """Отправляет сообщение или инициирует переподключение."""
-        if self.communicator:
-            try:
-                self.communicator.sendall(msg)
-                return
-            except (OSError, ConnectionResetError):
-                self.communicator = None
-        self.reconnect(msg)
+    def _write(self, msg):
+        """Отправка сообщения на контроллер."""
+        if not self.communicator:
+            logging.warning("Connection lost, initiating reconnect...")
+            self.startReconnectTimer()
+            return
+        try:
+            self.communicator.sendall(msg)
+        except (OSError, ConnectionResetError) as e:
+            logging.error(f"Error sending data: {e}")
+            self.communicator = None
+            self.startReconnectTimer()
 
-    def _read_response(self):
-        """Читает ответ от контроллера."""
+    def _read(self):
+        """Чтение данных с контроллера."""
         if not self.communicator:
             return -1
         try:
-            self.communicator.settimeout(self.connect_timeout)
+            self.communicator.settimeout(self.connectTimeout)
             data = self.communicator.recv(1024)
             return data if data else -1
         except (OSError, TimeoutError):
             return -1
 
-    def _send_identification_request(self):
-        """Отправляет запрос идентификации."""
-        self._send_message(bytes([0x42, 0x42, 0x00, 0xff]))
-        response = self._read_response()
+    def _whoIAm(self):
+        """Определение устройства по уникальному идентификатору."""
+        if not self.communicator:
+            return -1
+        self._write(bytes([0x42, 0x42, 0x00, 0xff]))
+        response = self._read()
         return response[0] if response != -1 else -1
 
-    def change_vertiport(self, id, status, r, g, b):
-        """Изменяет параметры порта."""
-        self.last_command = (id, status, r, g, b)
-        self._send_message(bytes([0x7e, id, status, r, g, b]))
+    def changeVertiport(self, id, status, r, g, b):
+        """Изменение состояния и цвета для указанного порта."""
+        self.lastCommand = (id, status, r, g, b)
+        self.lastVertiportId = id
+        self._write(bytes([0x7e, id, status, r, g, b]))
+        logging.info(f"Changed vertiport {id} to status={status}, color=({r}, {g}, {b})")
 
-    def reconnect(self, msg=None):
-        """Переподключается к контроллеру и отправляет последнее сообщение."""
+    def reconnect(self):
+        """Попытка восстановления подключения."""
         if self.communicator:
             return
-        self.communicator = self._create_client()
+        logging.info(f"Attempting to reconnect to {self.ip}:{self.port}")
+        self.communicator = self._createClient(self.ip, self.port)
         if self.communicator:
-            self.stop_reconnect_timer()
-            if self.last_command:
-                self.change_vertiport(*self.last_command)
-            if msg:
-                self._send_message(msg)
+            logging.info("Reconnected successfully.")
+            self.stopReconnectTimer()
+            if self.lastCommand:
+                self.changeVertiport(*self.lastCommand)
         else:
-            self.start_reconnect_timer()
-
-    def start_reconnect_timer(self):
-        """Запускает таймер переподключения."""
-        if not self.reconnect_timer or not self.reconnect_timer.is_alive():
-            self.reconnect_timer = threading.Timer(1, self.reconnect)
-            self.reconnect_timer.start()
-
-    def stop_reconnect_timer(self):
-        """Останавливает таймер переподключения."""
-        if self.reconnect_timer:
-            self.reconnect_timer.cancel()
+            logging.warning("Reconnect failed. Retrying...")
+            self.startReconnectTimer()
 
     def disconnect(self):
-        """Отключается от контроллера."""
+        """Отключение от контроллера."""
         if self.communicator:
             self.communicator.close()
         self.communicator = None
-        self.stop_reconnect_timer()
+        self.stopReconnectTimer()
 
-    def test_connection(self):
-        """Тестирует текущее соединение."""
+    def testConnection(self):
+        """Тестирование соединения."""
         if not self.communicator:
+            logging.warning("No active connection.")
             return False
         try:
             self.communicator.sendall(b'\x00')
             return True
-        except (OSError, ConnectionResetError):
+        except (OSError, ConnectionResetError) as e:
+            logging.error(f"Connection test failed: {e}")
             return False
-
